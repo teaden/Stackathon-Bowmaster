@@ -1,162 +1,204 @@
 import Phaser from 'phaser'
 
 import ScoreLabel from '../ui/ScoreLabel'
-import BombSpawner from './BombSpawner'
 
 const GROUND_KEY = 'ground'
-const DUDE_KEY = 'dude'
-const STAR_KEY = 'star'
-const BOMB_KEY = 'bomb'
+const BOW_KEY = 'bows'
+const ARROW_KEY = 'arrows'
+const TARGET_KEY = 'target'
+let count = 0
 
-export default class HelloWorldScene extends Phaser.Scene {
+export default class GameScene extends Phaser.Scene {
     constructor() {
         super('game-scene')
-        this.player = undefined
+        this.bow = undefined
+        this.platforms = undefined
         this.cursors = undefined
         this.scoreLabel = undefined
-        this.stars = undefined
-        this.bombSpawner = undefined
-
+        this.arrowGroup = undefined
+        this.currentArrow = undefined
+        this.target = undefined
+        this.velocity = 0
+        this.lastShotTime = undefined
+        this.loaded = false
         this.gameOver = false
     }
 
     preload() {
         this.load.image('sky', 'assets/sky.png')
+        this.load.image(TARGET_KEY, 'assets/Cyclops.png')
         this.load.image(GROUND_KEY, 'assets/platform.png')
-        this.load.image(STAR_KEY, 'assets/star.png')
-        this.load.image(BOMB_KEY, 'assets/bomb.png')
-
-        this.load.spritesheet(DUDE_KEY,
-            'assets/dude.png',
-            { frameWidth: 32, frameHeight: 48 }
-        )
+        this.load.image(ARROW_KEY, 'assets/arrow.png')
+        this.load.atlas(BOW_KEY, 'assets/bows.png', 'assets/bows_atlas.json')
     }
 
     create() {
         this.add.image(400, 300, 'sky')
-
-        const platforms = this.createPlatforms()
+        this.platforms = this.createPlatforms()
+        this.arrowGroup = this.createArrows()
         this.player = this.createPlayer()
-        this.stars = this.createStars()
-
+        this.target = this.createTarget()
         this.scoreLabel = this.createScoreLabel(16, 16, 0)
-        this.bombSpawner = new BombSpawner(this, BOMB_KEY)
-        const bombsGroup = this.bombSpawner.group
 
-        this.physics.add.collider(this.player, platforms)
-        this.physics.add.collider(this.stars, platforms)
-        this.physics.add.collider(bombsGroup, platforms)
-        this.physics.add.collider(this.player, bombsGroup, this.hitBomb, null, this)
+        this.physics.add.collider(this.arrowGroup, this.target, () => {
+            this.arrowGroup.children.each(arrow => {
+                arrow.body.allowGravity = false;
+                arrow.body.setVelocityX(Math.cos(arrow.rotation));
+                arrow.body.setVelocityY(Math.sin(arrow.rotation));
 
-
-        this.physics.add.overlap(this.player, this.stars, this.collectStar, null, this)
-
-        this.cursors = this.input.keyboard.createCursorKeys()
-    }
-
-    collectStar(player, star) {
-        star.disableBody(true, true)
-
-        this.scoreLabel.add(10)
-
-        if (this.stars.countActive(true) === 0) {
-            //  A new batch of stars to collect
-            this.stars.children.iterate((child) => {
-                child.enableBody(true, child.x, 0, true, true)
+                if (count === 0) {
+                    this.scoreLabel.add(550);
+                    this.add.text(18, 100, 'Hit (50pts) + Bowmaster Error(500pts)', { color: 'black' })
+                    count++
+                }
             })
-        }
+        })
 
-        this.bombSpawner.spawn(player.x)
+        this.cursor = this.input.activePointer
     }
+
 
     update() {
-        if (this.gameOver) {
+        const angle = Phaser.Math.Angle.Between(this.player.x, this.player.y, this.input.x, this.input.y)
+        this.player.setRotation(angle)
+        this.arrowGroup.children.each(arrow => { arrow.rotation = Math.atan2(arrow.body.velocity.y, arrow.body.velocity.x) })
+
+        if (this.cursor.leftButtonDown()) {
+            if (this.player.frame.name !== "bow_11") {
+                this.loaded = true
+                this.player.anims.play('load', true)
+            } else if (this.player.anims.currentAnim) {
+                this.player.anims.pause(this.player.anims.currentAnim.frames[11])
+            }
+        } else {
+            if (this.loaded === true) {
+                this.shootArrow(this.varyVelocity(this.player.frame.name))
+                this.loaded = false;
+                this.velocity = 0
+            }
+            this.player.setFrame('bow_0')
+        }
+    }
+
+    varyVelocity(frame) {
+        const frameNum = parseInt(frame.slice(4, 6))
+        return frameNum * 72
+    }
+
+    shootArrow(velocity) {
+        if (this.lastShotTime === undefined) {
+            this.lastShotTime = 0
+        }
+
+        if (this.game.getTime() - this.lastShotTime < 300) {
             return
         }
 
-        if (this.cursors.left.isDown) {
-            this.player.setVelocityX(-160)
+        this.lastShotTime = this.game.getTime()
 
-            this.player.anims.play('left', true)
-        }
-        else if (this.cursors.right.isDown) {
-            this.player.setVelocityX(160)
-
-            this.player.anims.play('right', true)
-        }
-        else {
-            this.player.setVelocityX(0)
-
-            this.player.anims.play('turn')
-        }
-
-        if (this.cursors.up.isDown && this.player.body.touching.down) {
-            this.player.setVelocityY(-330)
+        const arrow = this.arrowGroup.getFirstDead(false)
+        if (arrow) {
+            arrow.body.reset(this.player.x, this.player.y)
+            arrow.setActive(true)
+            arrow.setVisible(true)
+            arrow.rotation = this.player.rotation
+            arrow.body.velocity.x = Math.cos(arrow.rotation) * velocity
+            arrow.body.velocity.y = Math.sin(arrow.rotation) * velocity
+            this.add.text(18, 75, 'Bowmaster Predicts: Miss', { color: 'black' })
         }
     }
 
-    hitBomb(player, bomb) {
-        this.physics.pause()
+    createArrows() {
+        const arrows = this.physics.add.group()
+        arrows.createMultiple({
+            key: 'arrows',
+            frameQuantity: 10,
+            active: false,
+            visible: false,
+        })
 
-        player.setTint(0xff0000)
+        return arrows
+    }
 
-        player.anims.play('turn')
+    loadNextArrow() {
+        const currentArrow = this.arrowGroup.getFirstDead(false)
+        return currentArrow
+    }
 
-        this.gameOver = true
+    createTarget() {
+        const target = this.physics.add.sprite(800, 615, TARGET_KEY).setSize(500, 617)
+        target.setScale(0.3)
+        console.log(target.size)
+        target.body.allowGravity = false
+        target.setImmovable(true)
+        return target
     }
 
     createPlatforms() {
         const platforms = this.physics.add.staticGroup()
-
-        platforms.create(400, 568, GROUND_KEY).setScale(2).refreshBody()
-
-        platforms.create(600, 400, GROUND_KEY)
-        platforms.create(50, 250, GROUND_KEY)
-        platforms.create(750, 220, GROUND_KEY)
+        platforms.create(400, 790, GROUND_KEY).setScale(5).refreshBody()
 
         return platforms
     }
 
     createPlayer() {
-        const player = this.physics.add.sprite(100, 450, DUDE_KEY)
-        player.setBounce(0.2)
-        player.setCollideWorldBounds(true)
-
+        const bow = this.physics.add.sprite(100, 450, BOW_KEY)
+        bow.body.setAllowGravity(false)
         this.anims.create({
-            key: 'left',
-            frames: this.anims.generateFrameNumbers(DUDE_KEY, { start: 0, end: 3 }),
-            frameRate: 10,
-            repeat: -1
+            key: 'load',
+            frames: [
+                {
+                    key: BOW_KEY,
+                    frame: 'bow_0'
+                },
+                {
+                    key: BOW_KEY,
+                    frame: 'bow_1'
+                },
+                {
+                    key: BOW_KEY,
+                    frame: 'bow_2'
+                },
+                {
+                    key: BOW_KEY,
+                    frame: 'bow_3'
+                },
+                {
+                    key: BOW_KEY,
+                    frame: 'bow_4'
+                },
+                {
+                    key: BOW_KEY,
+                    frame: 'bow_5'
+                },
+                {
+                    key: BOW_KEY,
+                    frame: 'bow_6'
+                },
+                {
+                    key: BOW_KEY,
+                    frame: 'bow_7'
+                },
+                {
+                    key: BOW_KEY,
+                    frame: 'bow_8'
+                },
+                {
+                    key: BOW_KEY,
+                    frame: 'bow_9'
+                },
+                {
+                    key: BOW_KEY,
+                    frame: 'bow_10'
+                },
+                {
+                    key: BOW_KEY,
+                    frame: 'bow_11'
+                },
+            ]
         })
 
-        this.anims.create({
-            key: 'turn',
-            frames: [{ key: DUDE_KEY, frame: 4 }],
-            frameRate: 20
-        })
-
-        this.anims.create({
-            key: 'right',
-            frames: this.anims.generateFrameNumbers(DUDE_KEY, { start: 5, end: 8 }),
-            frameRate: 10,
-            repeat: -1
-        })
-
-        return player
-    }
-
-    createStars() {
-        const stars = this.physics.add.group({
-            key: STAR_KEY,
-            repeat: 11,
-            setXY: { x: 12, y: 0, stepX: 70 }
-        })
-
-        stars.children.iterate((child) => {
-            child.setBounceY(Phaser.Math.FloatBetween(0.4, 0.8))
-        })
-
-        return stars
+        return bow
     }
 
     createScoreLabel(x, y, score) {
